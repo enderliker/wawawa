@@ -20,6 +20,8 @@ const require = createRequire(import.meta.url);
 const REQUIRED_NODE_VERSION = 22;
 const REQUIRED_ENV_VARS = ['DISCORD_TOKEN', 'OWNER_ID'];
 
+const NPM_BIN = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
 // ANSI colors for logs
 const colors = {
   reset: '\x1b[0m',
@@ -134,7 +136,7 @@ async function install() {
 
       if (missing.length > 0) {
         log(`node_modules detected but missing runtime deps: ${missing.join(', ')} — installing...`, colors.yellow);
-        await runCommand('npm', ['install', '--no-audit', '--no-fund', ...missing]);
+        await runCommand(NPM_BIN, ['install', '--no-audit', '--no-fund', ...missing]);
         log('✓ Runtime deps installed', colors.green);
         return;
       }
@@ -149,7 +151,7 @@ async function install() {
     const command = useCi ? 'ci' : 'install';
 
     log(`Using: npm ${command}`, colors.blue);
-    await runCommand('npm', [command, '--no-audit', '--no-fund']);
+    await runCommand(NPM_BIN, [command, '--no-audit', '--no-fund']);
     log(`
 ✓ Dependencies installed successfully`, colors.green);
   } catch (err) {
@@ -173,7 +175,7 @@ async function build() {
       return;
     }
 
-    await runCommand('npm', ['run', 'build']);
+    await runCommand(NPM_BIN, ['run', 'build']);
     log(`
 ✓ Build completed successfully`, colors.green);
   } catch (err) {
@@ -189,7 +191,7 @@ async function start() {
   logStep('STARTING APPLICATION');
   
   return new Promise((resolve, reject) => {
-    const child = spawn('npm', ['start'], {
+    const child = spawn(NPM_BIN, ['start'], {
       stdio: 'inherit',
       shell: false,
     });
