@@ -71,7 +71,13 @@ export async function execute(
       return;
     }
 
-    await interaction.channel?.send({
+    const outChannel = interaction.channel as { send?: (input: unknown) => Promise<unknown> } | null;
+    if (!outChannel || typeof outChannel.send !== 'function') {
+      await interaction.editReply('❌ No puedo publicar clips en este canal.');
+      return;
+    }
+
+    await outChannel.send({
       content: '🎙️ 10s voice clips (per user):',
       files,
     });

@@ -266,6 +266,20 @@ export class DiscordBot {
     return false;
   }
 
+  private async safeSendTyping(channel: unknown): Promise<void> {
+    const ch = channel as { sendTyping?: () => Promise<unknown> };
+    if (typeof ch.sendTyping === 'function') {
+      await ch.sendTyping();
+    }
+  }
+
+  private async safeSendToChannel(channel: unknown, payload: { files: Array<{ attachment: Buffer | import('discord.js').AttachmentBuilder; name?: string }> }): Promise<void> {
+    const ch = channel as { send?: (input: unknown) => Promise<unknown> };
+    if (typeof ch.send === 'function') {
+      await ch.send(payload);
+    }
+  }
+
   /**
  * Ignore non-text payloads and links for auto-read.
  * - attachments that are images (or typical image extensions)
@@ -329,7 +343,7 @@ export class DiscordBot {
           if (prompt) {
             this.iaAwaitReply.delete(channelId);
             await this.saveIaAwaitState();
-            await message.channel.sendTyping();
+            await this.safeSendTyping(message.channel);
             const out = await iaCommand.askIA({
               guildId: message.guildId ?? null,
               channelId: message.channel.id,
@@ -341,7 +355,7 @@ export class DiscordBot {
               await message.reply(p);
             }
             for (const attachment of out.attachments) {
-              await message.channel.send({ files: [attachment] });
+              await this.safeSendToChannel(message.channel, { files: [{ attachment }] });
             }
 
             for (const fileId of out.fileIds) {
@@ -349,7 +363,7 @@ export class DiscordBot {
               try {
                 const buf = await iaCommand.getMistralFileContent(fileId);
                 if (buf) {
-                  await message.channel.send({ files: [{ attachment: buf, name: `${fileId}.png` }] });
+                  await this.safeSendToChannel(message.channel, { files: [{ attachment: buf, name: `${fileId}.png` }] });
                 }
               } catch {
                 // ignore download failures
@@ -374,7 +388,7 @@ export class DiscordBot {
           return;
         }
 
-        await message.channel.sendTyping();
+        await this.safeSendTyping(message.channel);
         const out = await iaCommand.askIA({
           guildId: message.guildId ?? null,
           channelId: message.channel.id,
@@ -387,14 +401,14 @@ export class DiscordBot {
         }
 
         for (const attachment of out.attachments) {
-          await message.channel.send({ files: [attachment] });
+          await this.safeSendToChannel(message.channel, { files: [{ attachment }] });
         }
 
         for (const fileId of out.fileIds) {
           try {
             const buf = await iaCommand.getMistralFileContent(fileId);
             if (buf) {
-              await message.channel.send({ files: [{ attachment: buf, name: `${fileId}.png` }] });
+              await this.safeSendToChannel(message.channel, { files: [{ attachment: buf, name: `${fileId}.png` }] });
             }
           } catch {
             // ignore

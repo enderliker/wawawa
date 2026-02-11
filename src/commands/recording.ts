@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, MessageFlags } from 'discord.js';
 import { guardInteraction } from '../guards/ownerOnly.js';
 import { createChildLogger } from '../util/logger.js';
-import { getRecordingEnabled, setRecordingEnabled } from '../util/settings.js';
+import { setRecordingEnabled } from '../util/settings.js';
 
 const logger = createChildLogger('RecordingCommand');
 
