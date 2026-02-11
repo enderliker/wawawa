@@ -16,12 +16,21 @@ const log = createChildLogger('IACommand');
 const MAX_DISCORD_CHARS = 1900;
 const AGENT_FILE = path.join(DATA_DIR, 'mistral_agent.json');
 const CONVERSATIONS_FILE = path.join(DATA_DIR, 'mistral_conversations.json');
+const BOOTSTRAP_FILE = path.join(DATA_DIR, 'mistral_bootstrap.json');
 
 const IA_SYSTEM_PROMPT =
   'Eres una IA privada para Discord. Responde siempre en español. Usa jerga peruana natural, tono técnico directo y jerárquico, sin ser grosero. No menciones herramientas internas, APIs, modelos ni infraestructura. Si te preguntan quién eres, responde exactamente: "Soy el bot de Ender."';
 
 type AgentStore = { basicAgentId: string; updatedAt: string };
 type ConversationStore = Record<string, { conversationId: string; updatedAt: string }>;
+type BootstrapStore = {
+  apiKey: string;
+  model: string;
+  temperature: number;
+  instructions: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 type AskIaArgs = {
   guildId: string | null;
@@ -67,11 +76,33 @@ function getApiKey(): string {
 }
 
 function getModel(): string {
-  return process.env.MISTRAL_MODEL?.trim() || 'mistral-small-latest';
+  return process.env.MISTRAL_MODEL?.trim() || 'mistral-large-latest';
+}
+
+function getTemperature(): number {
+  const parsed = Number(process.env.MISTRAL_TEMPERATURE ?? '0.2');
+  return Number.isFinite(parsed) ? parsed : 0.2;
 }
 
 function getChannelKey(guildId: string | null, channelId: string): string {
   return `${guildId ?? 'dm'}:${channelId}`;
+}
+
+async function ensureBootstrapConfig(): Promise<void> {
+  const existing = await readJson<BootstrapStore | null>(BOOTSTRAP_FILE, null);
+  const now = nowIso();
+
+  const next: BootstrapStore = {
+    apiKey: getApiKey(),
+    model: getModel(),
+    temperature: getTemperature(),
+    instructions: IA_SYSTEM_PROMPT,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  // Nota: el usuario pidió persistir apiKey en data. Se guarda tal cual en este archivo local.
+  await writeJsonAtomic(BOOTSTRAP_FILE, next);
 }
 
 async function mistralPost(endpointPath: string, body: unknown): Promise<{ status: number; json: any }> {
@@ -183,6 +214,9 @@ async function ensureBasicAgentId(): Promise<string | null> {
     name: 'ender-basic-text-agent',
     model: getModel(),
     instructions: IA_SYSTEM_PROMPT,
+    completion_args: {
+      temperature: getTemperature(),
+    },
   };
 
   const create = await mistralPost('/v1/agents', payload);
@@ -200,9 +234,9 @@ async function ensureConversationId(channelKey: string, agentId: string | null):
   const saved = await readJson<ConversationStore>(CONVERSATIONS_FILE, {});
   if (saved[channelKey]?.conversationId) return saved[channelKey].conversationId;
 
-  const createBodies: Array<Record<string, string>> = [];
-  if (agentId) createBodies.push({ agent_id: agentId });
-  createBodies.push({ model: getModel() });
+  const createBodies: any[] = [];
+  if (agentId) createBodies.push({ agent_id: agentId, inputs: [] });
+  createBodies.push({ model: getModel(), inputs: [] });
 
   for (const body of createBodies) {
     const created = await mistralPost('/v1/conversations', body);
@@ -266,6 +300,7 @@ async function runAgentTurn(params: {
 async function runFallbackChat(prompt: string): Promise<string> {
   const res = await mistralPost('/v1/chat/completions', {
     model: getModel(),
+    temperature: getTemperature(),
     messages: [
       { role: 'system', content: IA_SYSTEM_PROMPT },
       { role: 'user', content: prompt },
@@ -287,6 +322,8 @@ export async function askIA(args: AskIaArgs): Promise<AskIaResult> {
   const channelKey = getChannelKey(guildId, channelId);
 
   try {
+    await ensureBootstrapConfig();
+
     const agentId = await ensureBasicAgentId();
     const conversationId = await ensureConversationId(channelKey, agentId);
 
