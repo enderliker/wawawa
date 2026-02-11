@@ -21,6 +21,7 @@ const REQUIRED_NODE_VERSION = 22;
 const REQUIRED_ENV_VARS = ['DISCORD_TOKEN', 'OWNER_ID'];
 
 const NPM_BIN = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const USE_SHELL = process.platform === 'win32';
 
 // ANSI colors for logs
 const colors = {
@@ -101,7 +102,7 @@ function runCommand(command, args = [], options = {}) {
     
     const child = spawn(command, args, {
       stdio: 'inherit',
-      shell: false,
+      shell: USE_SHELL,
       ...options,
     });
     
@@ -193,7 +194,7 @@ async function start() {
   return new Promise((resolve, reject) => {
     const child = spawn(NPM_BIN, ['start'], {
       stdio: 'inherit',
-      shell: false,
+      shell: USE_SHELL,
     });
     
     // Graceful shutdown handlers
