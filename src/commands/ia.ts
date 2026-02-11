@@ -24,7 +24,7 @@ const IA_SYSTEM_PROMPT =
 type AgentStore = { basicAgentId: string; updatedAt: string };
 type ConversationStore = Record<string, { conversationId: string; updatedAt: string }>;
 type BootstrapStore = {
-  apiKey: string;
+  basicAgentId?: string;
   model: string;
   temperature: number;
   instructions: string;
@@ -69,10 +69,10 @@ async function writeJsonAtomic(filePath: string, payload: unknown): Promise<void
   await fs.rename(tmpPath, filePath);
 }
 
-function getApiKey(): string {
-  const key = process.env.MISTRAL_API_KEY?.trim();
-  if (!key) throw new Error('Falta MISTRAL_API_KEY en el .env');
-  return key;
+async function getApiKey(): Promise<string> {
+  const envKey = process.env.MISTRAL_API_KEY?.trim();
+  if (envKey) return envKey;
+  throw new Error('Falta MISTRAL_API_KEY en el .env');
 }
 
 function getModel(): string {
@@ -88,28 +88,28 @@ function getChannelKey(guildId: string | null, channelId: string): string {
   return `${guildId ?? 'dm'}:${channelId}`;
 }
 
-async function ensureBootstrapConfig(): Promise<void> {
+async function ensureBootstrapConfig(patch?: Partial<BootstrapStore>): Promise<BootstrapStore> {
   const existing = await readJson<BootstrapStore | null>(BOOTSTRAP_FILE, null);
   const now = nowIso();
 
   const next: BootstrapStore = {
-    apiKey: getApiKey(),
-    model: getModel(),
-    temperature: getTemperature(),
-    instructions: IA_SYSTEM_PROMPT,
+    basicAgentId: patch?.basicAgentId ?? existing?.basicAgentId,
+    model: patch?.model ?? getModel(),
+    temperature: patch?.temperature ?? getTemperature(),
+    instructions: patch?.instructions ?? IA_SYSTEM_PROMPT,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
 
-  // Nota: el usuario pidió persistir apiKey en data. Se guarda tal cual en este archivo local.
   await writeJsonAtomic(BOOTSTRAP_FILE, next);
+  return next;
 }
 
 async function mistralPost(endpointPath: string, body: unknown): Promise<{ status: number; json: any }> {
   const response = await fetch(`https://api.mistral.ai${endpointPath}`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${getApiKey()}`,
+      Authorization: `Bearer ${await getApiKey()}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
@@ -207,8 +207,14 @@ function shouldGenerateImage(prompt: string): boolean {
 }
 
 async function ensureBasicAgentId(): Promise<string | null> {
+  const bootstrap = await ensureBootstrapConfig();
+  if (bootstrap.basicAgentId) return bootstrap.basicAgentId;
+
   const saved = await readJson<AgentStore | null>(AGENT_FILE, null);
-  if (saved?.basicAgentId) return saved.basicAgentId;
+  if (saved?.basicAgentId) {
+    await ensureBootstrapConfig({ basicAgentId: saved.basicAgentId });
+    return saved.basicAgentId;
+  }
 
   const payload = {
     name: 'ender-basic-text-agent',
@@ -223,6 +229,7 @@ async function ensureBasicAgentId(): Promise<string | null> {
   if (create.status >= 200 && create.status < 300 && typeof create.json?.id === 'string') {
     const toSave: AgentStore = { basicAgentId: create.json.id, updatedAt: nowIso() };
     await writeJsonAtomic(AGENT_FILE, toSave);
+    await ensureBootstrapConfig({ basicAgentId: create.json.id });
     return toSave.basicAgentId;
   }
 
@@ -230,13 +237,21 @@ async function ensureBasicAgentId(): Promise<string | null> {
   return null;
 }
 
-async function ensureConversationId(channelKey: string, agentId: string | null): Promise<string | null> {
+async function ensureConversationId(channelKey: string, agentId: string | null, seedPrompt: string): Promise<string | null> {
   const saved = await readJson<ConversationStore>(CONVERSATIONS_FILE, {});
   if (saved[channelKey]?.conversationId) return saved[channelKey].conversationId;
 
+  const conversationInputVariants = [
+    [{ role: 'user', content: seedPrompt }],
+    [{ role: 'user', content: [{ type: 'text', text: seedPrompt }] }],
+    [seedPrompt],
+  ];
+
   const createBodies: any[] = [];
-  if (agentId) createBodies.push({ agent_id: agentId, inputs: [] });
-  createBodies.push({ model: getModel(), inputs: [] });
+  for (const inputs of conversationInputVariants) {
+    if (agentId) createBodies.push({ agent_id: agentId, inputs });
+    createBodies.push({ model: getModel(), inputs });
+  }
 
   for (const body of createBodies) {
     const created = await mistralPost('/v1/conversations', body);
@@ -322,10 +337,8 @@ export async function askIA(args: AskIaArgs): Promise<AskIaResult> {
   const channelKey = getChannelKey(guildId, channelId);
 
   try {
-    await ensureBootstrapConfig();
-
     const agentId = await ensureBasicAgentId();
-    const conversationId = await ensureConversationId(channelKey, agentId);
+    const conversationId = await ensureConversationId(channelKey, agentId, userText);
 
     if (agentId && conversationId) {
       const primary = await runAgentTurn({
@@ -398,7 +411,7 @@ export async function askIA(args: AskIaArgs): Promise<AskIaResult> {
 export async function getMistralFileContent(fileId: string): Promise<Buffer | null> {
   try {
     const response = await fetch(`https://api.mistral.ai/v1/files/${encodeURIComponent(fileId)}/content`, {
-      headers: { Authorization: `Bearer ${getApiKey()}` },
+      headers: { Authorization: `Bearer ${await getApiKey()}` },
     });
 
     if (!response.ok) {
@@ -411,6 +424,16 @@ export async function getMistralFileContent(fileId: string): Promise<Buffer | nu
   } catch (err) {
     log.warn({ err, fileId }, 'Error descargando archivo de Mistral');
     return null;
+  }
+}
+
+
+export async function initializeIA(): Promise<void> {
+  try {
+    await ensureBootstrapConfig();
+    await ensureBasicAgentId();
+  } catch (err) {
+    log.warn({ err }, 'IA bootstrap init failed');
   }
 }
 
@@ -428,7 +451,15 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  await interaction.deferReply();
+  try {
+    await interaction.deferReply();
+  } catch (err: any) {
+    if (err?.code === 10062) {
+      log.warn({ err }, 'Interaction expirada antes de deferReply en /ia');
+      return;
+    }
+    throw err;
+  }
 
   const result = await askIA({
     guildId: interaction.guildId,

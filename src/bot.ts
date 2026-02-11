@@ -103,6 +103,8 @@ export class DiscordBot {
     this.startClipRecorderAttachLoop();
 
     await this.loadIaAwaitState();
+
+    await iaCommand.initializeIA();
 }
 
   private async loadIaAwaitState(): Promise<void> {
