@@ -196,18 +196,28 @@ async function ensureBasicAgentId(): Promise<string | null> {
   return null;
 }
 
-async function ensureConversationId(channelKey: string): Promise<string | null> {
+async function ensureConversationId(channelKey: string, agentId: string | null): Promise<string | null> {
   const saved = await readJson<ConversationStore>(CONVERSATIONS_FILE, {});
   if (saved[channelKey]?.conversationId) return saved[channelKey].conversationId;
 
-  const created = await mistralPost('/v1/conversations', {});
-  if (created.status >= 200 && created.status < 300 && typeof created.json?.id === 'string') {
-    saved[channelKey] = { conversationId: created.json.id, updatedAt: nowIso() };
-    await writeJsonAtomic(CONVERSATIONS_FILE, saved);
-    return created.json.id;
+  const createBodies: Array<Record<string, string>> = [];
+  if (agentId) createBodies.push({ agent_id: agentId });
+  createBodies.push({ model: getModel() });
+
+  for (const body of createBodies) {
+    const created = await mistralPost('/v1/conversations', body);
+    if (created.status >= 200 && created.status < 300 && typeof created.json?.id === 'string') {
+      saved[channelKey] = { conversationId: created.json.id, updatedAt: nowIso() };
+      await writeJsonAtomic(CONVERSATIONS_FILE, saved);
+      return created.json.id;
+    }
+
+    log.warn(
+      { status: created.status, body: created.json, channelKey, request: body },
+      'No se pudo crear conversación persistente con payload, intentando alternativa'
+    );
   }
 
-  log.warn({ status: created.status, body: created.json, channelKey }, 'No se pudo crear conversación persistente, usando fallback');
   return null;
 }
 
@@ -278,7 +288,7 @@ export async function askIA(args: AskIaArgs): Promise<AskIaResult> {
 
   try {
     const agentId = await ensureBasicAgentId();
-    const conversationId = await ensureConversationId(channelKey);
+    const conversationId = await ensureConversationId(channelKey, agentId);
 
     if (agentId && conversationId) {
       const primary = await runAgentTurn({
